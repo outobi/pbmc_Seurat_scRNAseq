@@ -1,0 +1,818 @@
+---
+title: "Single-Cell RNA-seq Analysis with Seurat V5"
+author: "Fei Wang"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: united
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+```
+
+# Introduction
+
+This document demonstrates a complete single-cell RNA-seq analysis workflow using the PBMC dataset with Seurat V5. The analysis includes:
+
+- Data loading and preprocessing
+- Quality control and filtering
+- Normalization and scaling
+- Feature selection
+- Principal Component Analysis (PCA)
+- Clustering
+- UMAP visualization
+- Differential expression analysis
+- Cell type annotation (by canonical predetermined marker genes)
+
+## Load Required Libraries
+
+```{r load-libraries}
+library(dplyr)
+library(Seurat) # v5.3
+library(patchwork)
+```
+
+# 1. Load the PBMC Dataset
+
+We load the 10X Genomics data using the `Read10X` function.
+
+```{r load-data}
+# Function: Read10X()
+# Input: 
+#   - genes.tsv (gene names, character vector)
+#   - barcodes.tsv (cell barcodes, character vector)
+#   - matrix.mtx (expression counts, sparse matrix format)
+# Output: 
+#   - pbmc.data: dgCMatrix (sparse matrix)
+#   - Dimensions: 32738 genes (rows) × 2700 cells (columns)
+#   - Data type: Integer counts (non-negative)
+
+pbmc.data <- Read10X(data.dir = "/Users/outobi/Documents/Learn bioinformatics /scRNA by Seurat V5/filtered_gene_bc_matrices/hg19/")
+```
+
+## Initialize the Seurat Object
+
+We create a Seurat object with basic filtering:
+- `min.cells = 3`: Keep genes detected in at least 3 cells
+- `min.features = 200`: Keep cells with at least 200 detected genes
+
+```{r create-seurat}
+# Function: CreateSeuratObject()
+# Input: 
+#   - counts: sparse matrix (32738 genes × 2700 cells, integer counts)
+#   - min.cells: numeric (3)
+#   - min.features: numeric (200)
+# Output: 
+#   - pbmc: Seurat object
+#   - Filtered to 13714 features × 2700 cells
+#   - meta.data: data.frame with 3 columns (orig.ident, nCount_RNA, nFeature_RNA)
+#     - orig.ident: character (project name)
+#     - nCount_RNA: numeric (total counts per cell)
+#     - nFeature_RNA: numeric (number of detected genes per cell)
+
+pbmc <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+pbmc
+```
+
+The resulting object contains 13,714 features across 2,700 samples within 1 assay.
+
+### Seurat Object Structure (Step 1)
+
+```
+pbmc
+├── assays
+│   └── RNA
+│       └── layers
+│           └── counts (13714 genes × 2700 cells)
+├── meta.data (cell-level metadata: orig.ident, nCount_RNA, nFeature_RNA)
+└── project: pbmc3k
+```
+
+## Examine Expression of Specific Genes
+
+Let's look at the expression of some marker genes (CD3D, TCL1A, MS4A1) across the first 30 cells:
+
+```{r examine-genes}
+pbmc.data[c("CD3D", "TCL1A", "MS4A1"), 1:30]
+```
+
+# 2. Quality Control
+
+## Calculate QC Metrics
+
+The `[[` operator can add columns to object metadata directly! This is a great place to stash QC stats. We calculate the percentage of mitochondrial gene expression, which is an indicator of cell quality. High mitochondrial content often indicates dying cells.
+
+```{r calculate-qc}
+# Function: PercentageFeatureSet()
+# Input: 
+#   - pbmc: Seurat object (13714 genes × 2700 cells)
+#   - pattern: character ("^MT-", regex for mitochondrial genes)
+# Output: 
+#   - percent.mt: numeric vector (length 2700, one value per cell)
+#   - Data type: numeric (percentage, 0-100)
+#   - Added to pbmc@meta.data as new column
+
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+
+# View assays and metadata
+pbmc@assays
+head(pbmc@meta.data)
+```
+
+## Visualize QC Metrics
+
+```{r plot-qc-violin, fig.width=12, fig.height=5}
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+## Feature-Feature Relationships
+
+Examine relationships between QC metrics:
+
+```{r plot-qc-scatter, fig.width=12, fig.height=5}
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+## Filter Cells
+
+Based on the QC metrics, we filter cells to retain high-quality cells:
+- Between 200 and 2500 detected genes
+- Less than 5% mitochondrial content
+
+```{r filter-cells}
+# Function: subset()
+# Input: 
+#   - pbmc: Seurat object (13714 genes × 2700 cells)
+#   - subset: logical expression (filtering criteria)
+# Output: 
+#   - pbmc: Seurat object (filtered)
+#   - Dimensions: 13714 genes × 2638 cells (62 cells removed)
+#   - Retains only high-quality cells
+
+pbmc <- subset(pbmc, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+pbmc
+```
+
+### Seurat Object Structure (Step 2)
+
+```
+pbmc
+├── assays
+│   └── RNA
+│       └── layers
+│           └── counts (filtered cells)
+├── meta.data (cell-level metadata: orig.ident, nCount_RNA, nFeature_RNA, percent.mt)
+└── project: pbmc3k
+```
+
+# 3. Normalization
+
+We normalize the data using log-normalization with a scale factor of 10,000. This accounts for differences in sequencing depth between cells.
+
+```{r normalize}
+# Function: NormalizeData()
+# Input: 
+#   - pbmc@assays$RNA@layers$counts: sparse matrix (13714 genes × 2638 cells, integer counts)
+#   - normalization.method: character ("LogNormalize")
+#   - scale.factor: numeric (10000)
+# Output: 
+#   - pbmc@assays$RNA@layers$data: sparse matrix (13714 genes × 2638 cells)
+#   - Data type: numeric (log-normalized values)
+#   - Formula: log1p(counts / total_counts * 10000)
+#   - Values typically range from 0 to ~10
+
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+### Seurat Object Structure (Step 3)
+
+```
+pbmc
+├── assays
+│   └── RNA
+│       └── layers
+│           ├── counts (raw counts)
+│           └── data (normalized data)
+├── meta.data
+└── project: pbmc3k
+```
+
+# 4. Find Variable Features
+
+We identify highly variable genes that show high cell-to-cell variation. These genes are informative for downstream analysis.
+
+```{r find-variable-features}
+# Function: FindVariableFeatures()
+# Input:
+#   - pbmc@assays$RNA@layers$data
+#       Sparse matrix (13714 genes × 2638 cells) of log-normalized counts
+#   - selection.method = "vst"
+#       Variance-stabilizing transformation used to model mean–variance relationship
+#   - nfeatures = 2000
+#       Number of most variable genes to retain
+#
+# Output:
+#   - pbmc@assays$RNA@meta.data  (feature-level metadata; 13714 rows × 8 columns)
+#       * vf_vst_counts_mean
+#           Mean expression of each gene across all cells (on vst input scale)
+#       * vf_vst_counts_variance
+#           Observed variance of expression for each gene
+#       * vf_vst_counts_variance.expected
+#           Expected variance at that mean, from the fitted mean–variance curve
+#       * vf_vst_counts_variance.standardized
+#           Standardized variance = (observed / expected); measures “extra” variability
+#       * vf_vst_counts_variable
+#           Logical flag; TRUE if the gene is selected as a highly variable feature
+#       * vf_vst_counts_rank
+#           Rank of each gene by standardized variance (1 = most variable)
+#       * var.features
+#           Gene name if it is a variable feature, otherwise NA (redundant helper column)
+#       * var.features.rank
+#           Rank among variable features (usually matches vf_vst_counts_rank for HVGs)
+#
+#   - Variable features:
+#       VariableFeatures(pbmc) returns the top nfeatures (e.g., 2000) genes
+#       where vf_vst_counts_variable == TRUE.
+
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+
+# top 10 highly variable gene
+VariableFeatures(pbmc)[1:10]
+
+
+```
+
+### Seurat Object Structure (Step 4)
+
+```
+pbmc
+├── assays
+│   └── RNA
+│       ├── layers
+│       │   ├── counts
+│       │   └── data
+│       └── meta.data (vst.mean, vst.variance, vst.variance.expected, vst.variance.standardized, )
+└── meta.data
+```
+
+## Visualize Variable Features
+
+```{r plot-variable-features, fig.width=12, fig.height=5}
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(pbmc), 10)
+
+# Plot variable features with and without labels
+plot1 <- VariableFeaturePlot(pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+```
+
+# 5. Scale Data
+
+We scale the data to give equal weight to each gene in downstream analyses. This centers the expression of each gene to mean 0 and scales to unit variance.
+
+```{r scale-data}
+# Function: ScaleData()
+# Input: 
+#   - pbmc@assays$RNA@layers$data: sparse matrix (13714 genes × 2638 cells, log-normalized)
+#   - features: character vector (13714 gene names, all genes)
+# Output: 
+#   - pbmc@assays$RNA@layers$scale.data: dense matrix (13714 genes × 2638 cells)
+#   - Data type: numeric (scaled values)
+#   - For each gene: mean = 0, standard deviation = 1
+#   - Values typically range from -3 to +3 (z-scores)
+#   - Note: Converts from sparse to dense matrix
+
+all.genes <- rownames(pbmc)
+pbmc <- ScaleData(pbmc, features = all.genes)
+```
+
+### Seurat Object Structure (Step 5)
+
+```
+pbmc
+├── assays
+│   └── RNA
+│       ├── layers
+│       │   ├── counts      # raw counts (sparse)
+│       │   └── data        # log-normalized expression
+│       └── meta.data       # feature-level metadata (13714 genes × 8 columns)
+│           ├── vf_vst_counts_mean                 # mean expression
+│           ├── vf_vst_counts_variance             # observed variance
+│           ├── vf_vst_counts_variance.expected    # expected variance from mean–variance fit
+│           ├── vf_vst_counts_variance.standardized# standardized variance (extra variability)
+│           ├── vf_vst_counts_variable             # TRUE/FALSE: selected as HVG
+│           ├── vf_vst_counts_rank                 # rank by variability (1 = most variable)
+│           ├── var.features                       # gene name if HVG, else NA
+│           └── var.features.rank                  # rank among variable features
+└── meta.data   
+```
+
+## Examine Data Structure in Seurat V5
+
+```{r examine-structure}
+# View the different data layers
+cat("Counts layer (first 5x5):\n")
+pbmc@assays$RNA@layers$counts[1:5, 1:5]
+
+cat("\nNormalized data layer (first 5x5):\n")
+pbmc@assays$RNA@layers$data[1:5, 1:5]
+
+cat("\nScaled data layer (first 5x5):\n")
+pbmc@assays$RNA@layers$scale.data[1:5, 1:5]
+```
+
+# 6. Principal Component Analysis (PCA)
+
+We perform PCA on the scaled data using only the variable features (only in selected most variable features after scale). This reduces dimensionality while retaining the most important sources of variation.
+
+```{r run-pca}
+# Function: RunPCA()
+# Input: 
+#   - pbmc@assays$RNA@layers$scale.data: matrix (13714 genes × 2638 cells, scaled)
+#   - features: character vector (2000 variable genes)
+# Output: 
+#   - pbmc@reductions$pca@cell.embeddings: matrix (2638 cells × 50 PCs)
+#     - Data type: numeric (PCA scores, cell coordinates in PC space)
+#     - Each row is a cell, each column is a principal component
+#   - pbmc@reductions$pca@feature.loadings: matrix (2000 genes × 50 PCs)
+#     - Data type: numeric (gene loadings/weights)
+#     - Each row is a gene, each column is a principal component
+#   - pbmc@reductions$pca@stdev: numeric vector (50 values, standard deviation of each PC)
+
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+```
+
+### Seurat Object Structure (Step 6)
+
+```
+pbmc
+├── assays
+│   └── RNA
+│       └── layers (counts, data, scale.data)
+├── meta.data
+└── reductions
+    └── pca
+        ├── cell.embeddings (PCA scores: 2638 cells × 50 PCs)
+        └── feature.loadings (PCA loadings: 2000 genes × 50 PCs)
+
+```
+
+## Examine PCA Results
+
+```{r examine-pca}
+# Print the genes with highest loadings for the first 5 PCs
+print(pbmc[["pca"]], dims = 1:5, nfeatures = 5)
+```
+
+### Seurat Object Structure
+
+The Seurat object now contains:
+```
+pbmc
+├── assays
+│   └── RNA (counts, data, scale.data layers)
+├── meta.data (cell-level metadata)
+├── reductions
+│   └── pca
+│       ├── cell.embeddings (PCA scores: 2638 cells × 50 PCs)
+│       └── feature.loadings (PCA loadings: 2000 genes × 50 PCs)
+└── ...
+```
+
+## Visualize PCA Results
+
+### PC Loadings
+
+Visualize loadings for PC1 and PC2:
+
+```{r plot-loadings-2, fig.width=10, fig.height=6}
+VizDimLoadings(pbmc, dims = 1:2, reduction = "pca")
+```
+
+Visualize loadings for PC1 only:
+
+```{r plot-loadings-1, fig.width=10, fig.height=6}
+VizDimLoadings(pbmc, dims = 1, reduction = "pca")
+```
+
+### PCA Scatter Plot
+
+```{r plot-pca-scatter, fig.width=8, fig.height=6}
+DimPlot(pbmc, reduction = "pca") + NoLegend()
+```
+
+### Heatmap of PC1
+
+Visualize the top and bottom 500 cells along PC1 component with a heatmap of scaled expression:
+
+```{r plot-heatmap, fig.width=10, fig.height=8}
+# PC1 component, top and bottom 500 cells along pc1 component, heatmap of scaled expression
+DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
+```
+
+## Determine Dimensionality
+
+Use an elbow plot to determine the number of PCs to use for downstream analysis:
+
+```{r elbow-plot, fig.width=8, fig.height=6}
+ElbowPlot(pbmc)
+```
+
+We chose 10 here, but encourage users to consider the following:
+
+- Dendritic cell and NK aficionados may recognize that genes strongly associated with PCs 12 and 13 define rare immune subsets (i.e. MZB1 is a marker for plasmacytoid DCs). However, these groups are so rare, they are difficult to distinguish from background noise for a dataset of this size without prior knowledge.
+- We encourage users to repeat downstream analyses with a different number of PCs (10, 15, or even 50!). As you will observe, the results often do not differ dramatically.
+- We advise users to err on the higher side when choosing this parameter. For example, performing downstream analyses with only 5 PCs does significantly and adversely affect results.
+
+# 7. Cluster the Cells
+
+## Understanding the Clustering Process
+
+The clustering workflow involves two main steps:
+
+1. **FindNeighbors()**: 
+   - Uses first 10 PCs to calculate distances
+   - Each cell finds k nearest neighbors → KNN graph
+   - Uses Jaccard similarity to reweight edges → SNN graph (pbmc@graphs$RNA_snn)
+
+2. **FindClusters()**:
+   - Runs Louvain/SLM on the SNN graph
+   - Finds communities based on modularity → clusters
+   - Resolution controls granularity: higher value = more clusters
+   - Results written to meta.data$seurat_clusters (new column) and Idents(pbmc)
+
+```{r clustering}
+# Function: FindNeighbors()
+# Input: 
+#   - pbmc@reductions$pca@cell.embeddings: matrix (2638 cells × 50 PCs)
+#   - dims: numeric vector (1:10, use first 10 PCs)
+# Output: 
+#   - pbmc@graphs$RNA_nn: sparse matrix (2638 × 2638, KNN graph)
+#     - Data type: numeric, values 0 or 1 (binary adjacency)
+#   - pbmc@graphs$RNA_snn: sparse matrix (2638 × 2638, SNN graph)
+#     - Data type: numeric, values 0 to 1 (weighted edges, Jaccard similarity)
+
+# Function: FindClusters()
+# Input: 
+#   - pbmc@graphs$RNA_snn: sparse matrix (2638 × 2638)
+#   - resolution: numeric (0.5)
+# Output: 
+#   - pbmc@meta.data$seurat_clusters: factor (2638 values, cluster IDs: 0-8)
+#   - pbmc@active.ident: factor (2638 values, same as seurat_clusters)
+#   - Data type: categorical (9 clusters numbered 0 to 8)
+
+pbmc <- FindNeighbors(pbmc, dims = 1:10)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+```
+
+### Seurat Object Structure (Step 7)
+
+```
+pbmc
+├── assays
+│   └── RNA
+├── meta.data (added: seurat_clusters)
+├── reductions
+│   └── pca
+├── graphs
+│   ├── RNA_nn (KNN graph: 2638 × 2638 sparse matrix)
+│   └── RNA_snn (SNN graph: 2638 × 2638 sparse matrix)
+└── active.ident (cluster assignments)
+
+```
+
+## Examine Graph Structure
+
+```{r examine-graphs}
+# View available graphs
+names(pbmc@graphs)
+# "RNA_nn"  "RNA_snn"
+
+# Sparse matrix of edge weights
+pbmc@graphs$RNA_snn
+
+# KNN graph: 2638 * 2638 0 or 1 matrix (1 is in this cell k closest distance)
+RNA_nn <- pbmc@graphs$RNA_nn
+dim(RNA_nn)               # n_cells x n_cells
+RNA_nn[1:5, 1:5]
+
+# SNN graph: 2638 * 2638 0 to 1 matrix (quantify their similarity or overlap in knn)
+RNA_snn <- pbmc@graphs$RNA_snn
+dim(RNA_snn)
+RNA_snn[1:10, 1:10]
+range(RNA_snn[RNA_snn != 0])
+# 0.08108108 1.00000000
+```
+
+## View Cluster Assignments
+
+```{r view-clusters}
+# Storage places
+# View first 5 cluster assignments
+head(Idents(pbmc), 5)
+
+# Clusters are also stored in metadata
+head(pbmc$seurat_clusters,5)
+```
+
+# 8. UMAP Visualization
+
+Run UMAP for 2D visualization of the data.
+
+```{r run-umap}
+# Function: RunUMAP()
+# Input: 
+#   - pbmc@reductions$pca@cell.embeddings: matrix (2638 cells × 50 PCs)
+#   - dims: numeric vector (1:10, use first 10 PCs)
+# Output: 
+#   - pbmc@reductions$umap@cell.embeddings: matrix (2638 cells × 2 dimensions)
+#     - Data type: numeric (UMAP coordinates)
+#     - Column names: UMAP_1, UMAP_2
+#     - Values typically range from -10 to +10
+#     - Each row represents a cell's 2D position for visualization
+
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+```
+
+### Seurat Object Structure (Step 8)
+
+```
+pbmc
+├── assays
+│   └── RNA
+├── meta.data (seurat_clusters)
+├── reductions
+│   ├── pca
+│   └── umap
+│       └── cell.embeddings (UMAP coordinates: 2638 cells × 2 dimensions)
+├── graphs (RNA_nn, RNA_snn)
+└── active.ident
+
+```
+
+## Visualize Clusters on UMAP
+
+Note that you can set `label = TRUE` or use the LabelClusters function to help label individual clusters:
+
+```{r plot-umap, fig.width=10, fig.height=8}
+DimPlot(pbmc, reduction = "umap", label = TRUE)
+```
+
+# 9. Differential Expression Analysis
+
+## Find Markers for Specific Clusters
+
+### Cluster 2 Markers
+
+Find all marker genes upregulated in cluster 2 compared to all other cells:
+
+```{r cluster2-markers}
+# Function: FindMarkers()
+# Input: 
+#   - pbmc@assays$RNA@layers$data: sparse matrix (13714 genes × 2638 cells, log-normalized)
+#   - pbmc@active.ident: factor (cluster assignments)
+#   - ident.1: numeric or character (cluster 2)
+# Output: 
+#   - cluster2.markers: data.frame (genes × 5 columns)
+#     - p_val: numeric (p-value from differential expression test)
+#     - avg_log2FC: numeric (average log2 fold change)
+#     - pct.1: numeric (% of cells in cluster 2 expressing the gene)
+#     - pct.2: numeric (% of cells in other clusters expressing the gene)
+#     - p_val_adj: numeric (adjusted p-value)
+#   - Rows sorted by p_val (most significant first)
+
+cluster2.markers <- FindMarkers(pbmc, ident.1 = 2)
+head(cluster2.markers, n = 5)
+```
+
+### Cluster 5 vs Clusters 0 and 3
+
+Find markers distinguishing cluster 5 from specific other clusters:
+
+```{r cluster5-markers}
+cluster5.markers <- FindMarkers(pbmc, ident.1 = 5, ident.2 = c(0, 3))
+head(cluster5.markers, n = 5)
+```
+
+## Find Markers for All Clusters
+
+Find marker genes for every cluster compared to all remaining cells (positive markers only):
+
+```{r find-all-markers}
+# Function: FindAllMarkers()
+# Input: 
+#   - pbmc@assays$RNA@layers$data: sparse matrix (13714 genes × 2638 cells, log-normalized)
+#   - pbmc@active.ident: factor (9 clusters: 0-8)
+#   - only.pos: logical (TRUE, return only upregulated genes)
+# Output: 
+#   - pbmc.markers: data.frame (genes × 7 columns)
+#     - p_val: numeric (p-value)
+#     - avg_log2FC: numeric (average log2 fold change)
+#     - pct.1: numeric (% cells in cluster expressing gene)
+#     - pct.2: numeric (% cells in other clusters expressing gene)
+#     - p_val_adj: numeric (adjusted p-value)
+#     - cluster: factor (cluster ID, 0-8)
+#     - gene: character (gene name)
+#   - Contains markers for all 9 clusters
+
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE)
+
+# Filter for genes with strong upregulation (log2FC > 1)
+pbmc.markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1)
+```
+
+## ROC Test for Classification Power
+
+Seurat has several tests for differential expression which can be set with the test.use parameter (see Seurat DE vignette for details). For example, the ROC test returns the 'classification power' for any individual marker (ranging from 0 - random, to 1 - perfect).
+
+```{r roc-test}
+cluster0.markers <- FindMarkers(pbmc, ident.1 = 0, logfc.threshold = 0.25, 
+                                test.use = "roc", only.pos = TRUE)
+head(cluster0.markers)
+```
+
+## Visualize Marker Expression
+
+### Violin Plots (Classical Visualization)
+
+```{r violin-markers, fig.width=10, fig.height=6}
+# Normalized data
+VlnPlot(pbmc, features = c("MS4A1", "CD79A"))
+```
+
+```{r violin-counts, fig.width=10, fig.height=6}
+# You can plot raw counts as well
+VlnPlot(pbmc, features = c("NKG7", "PF4"), slot = "counts", log = TRUE)
+```
+
+### Feature Plots
+
+Visualize multiple marker genes on UMAP:
+
+```{r feature-plot, fig.width=14, fig.height=10}
+FeaturePlot(pbmc, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", 
+                               "FCGR3A", "LYZ", "PPBP", "CD8A"))
+```
+
+## Top Markers Heatmap
+
+Extract the top 10 marker genes per cluster and visualize in a heatmap:
+
+```{r top-markers}
+# Extract top 10 genes per cluster
+# 1. group_by(cluster)
+#    → "Split" the table by cluster.
+#    Now all subsequent operations happen within each cluster separately.
+# 2. filter(avg_log2FC > 1)
+#    → Keep only genes that are strongly upregulated in that cluster
+#    (log2 fold change > 1 means at least ~2× higher expression).
+# 3. slice_head(n = 10)
+#    → For each cluster, keep the first 10 rows (after filtering).
+#    Since FindAllMarkers usually sorts by p_val or p_val_adj, this means:
+#    "Take the top 10 strongest / most significant marker genes per cluster."
+# 4. ungroup()
+#    → Remove the grouping so top10 is now just a normal tibble.
+# 5. -> top10
+#    → Save the result as a new object top10.
+pbmc.markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 10) %>%
+  ungroup() -> top10
+```
+
+```{r heatmap-top-markers, fig.width=12, fig.height=10}
+# Draw a heatmap of the top 10 upregulated marker genes for each cluster across all cells.
+DoHeatmap(pbmc, features = top10$gene) + NoLegend()
+```
+
+## Ridge Plots
+
+Ridge plots show the distribution of expression across clusters:
+
+```{r ridge-single, fig.width=10, fig.height=6}
+# Single gene
+RidgePlot(pbmc, features = "MS4A1")
+```
+
+```{r ridge-multiple, fig.width=10, fig.height=10}
+# Multiple genes, faceted
+RidgePlot(pbmc, features = c("MS4A1", "CD79A", "CD3D"), ncol = 1)
+```
+
+## Feature-Feature Correlations
+
+Examine feature correlation among all cells:
+
+```{r feature-scatter-1, fig.width=8, fig.height=6}
+# B cell markers
+FeatureScatter(pbmc, feature1 = "MS4A1", feature2 = "CD79A")
+```
+
+```{r feature-scatter-2, fig.width=8, fig.height=6}
+# T cell markers
+FeatureScatter(pbmc, feature1 = "CD3D", feature2 = "CCR7")
+```
+
+## Cell-Cell Correlations
+
+Cell correlation among variable features:
+
+```{r cell-scatter, fig.width=8, fig.height=6}
+CellScatter(
+  pbmc,
+  cell1 = colnames(pbmc)[1],
+  cell2 = colnames(pbmc)[2],
+  features = VariableFeatures(pbmc)
+)
+```
+
+## Dot Plot of Marker Genes
+
+Classical bubble plot of marker genes. Dot plots are a concise way to visualize marker gene expression across clusters. The size of the dot represents the percentage of cells expressing the gene, and the color intensity represents the average expression level.
+
+```{r dotplot, fig.width=10, fig.height=6}
+markers.to.plot <- c("MS4A1", "CD79A",    # B cells
+                     "CD3D", "IL7R",      # CD4 T
+                     "LTB", "NKG7")       # others
+
+DotPlot(pbmc, features = markers.to.plot) + RotatedAxis()
+```
+
+# 10. Cell Type Annotation
+
+Based on canonical marker genes, we assign cell type identities to each cluster:
+
+- **Cluster 0**: Naive CD4+ T cells
+- **Cluster 1**: CD14+ Monocytes
+- **Cluster 2**: Memory CD4+ T cells
+- **Cluster 3**: B cells
+- **Cluster 4**: CD8+ T cells
+- **Cluster 5**: FCGR3A+ Monocytes
+- **Cluster 6**: NK cells
+- **Cluster 7**: Dendritic Cells
+- **Cluster 8**: Platelets
+
+```{r annotate-clusters}
+# Function: RenameIdents()
+# Input: 
+#   - pbmc@active.ident: factor (9 levels: 0-8, numeric cluster IDs)
+#   - new.cluster.ids: named character vector (9 cell type labels)
+# Output: 
+#   - pbmc@active.ident: factor (9 levels, cell type names)
+#     - Data type: categorical (character labels)
+#     - Levels: "Naive CD4 T", "CD14+ Mono", "Memory CD4 T", "B", "CD8 T", 
+#               "FCGR3A+ Mono", "NK", "DC", "Platelet"
+#   - Note: Original numeric clusters preserved in pbmc@meta.data$seurat_clusters
+
+new.cluster.ids <- c("Naive CD4 T", "CD14+ Mono", "Memory CD4 T", "B", "CD8 T", 
+                     "FCGR3A+ Mono", "NK", "DC", "Platelet")
+names(new.cluster.ids) <- levels(pbmc)
+pbmc <- RenameIdents(pbmc, new.cluster.ids)
+```
+
+### Seurat Object Structure (Step 10)
+
+```
+pbmc
+├── assays
+│   └── RNA (counts, data, scale.data layers)
+├── meta.data (seurat_clusters, nCount_RNA, nFeature_RNA, percent.mt)
+├── reductions
+│   ├── pca (50 PCs)
+│   └── umap (2D coordinates)
+├── graphs (RNA_nn, RNA_snn)
+└── active.ident (cell type labels: Naive CD4 T, CD14+ Mono, Memory CD4 T, etc.)
+
+```
+
+## Final Annotated UMAP
+
+```{r final-umap, fig.width=12, fig.height=8}
+DimPlot(pbmc, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+```
+
+# Save Results
+
+Save the final Seurat object for future use (R Data Serialization, one object only):
+
+```{r save-object, eval=FALSE}
+saveRDS(pbmc, file = "../pbmc_tutorial.rds")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

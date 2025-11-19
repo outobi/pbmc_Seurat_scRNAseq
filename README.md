@@ -1,10 +1,10 @@
 # Single-Cell RNA-seq Analysis with Seurat V5
 
-A comprehensive single-cell RNA sequencing analysis workflow using the PBMC3k dataset and Seurat V5. This project demonstrates best practices for quality control, normalization, clustering, visualization, and cell type annotation of scRNA-seq data.
+A comprehensive single-cell RNA sequencing analysis workflow using the PBMC3k dataset and Seurat V5. This project demonstrates best practices for quality control, normalization, clustering, visualization, and cell type annotation of scRNA-seq data. I make a end-to-end detailed and comprehensive comments on each step. 
 
 ## 📊 Project Overview
 
-This analysis processes 2,700 Peripheral Blood Mononuclear Cells (PBMCs) sequenced with the 10X Genomics platform. The workflow identifies 9 distinct cell populations and annotates them based on canonical marker genes.
+This analysis processes 2,700 Peripheral Blood Mononuclear Cells (PBMCs) sequenced with the 10X Genomics platform. The workflow identifies 9 distinct cell populations and annotates them based on canonical marker genes. The workflow is based on the original Seurat V5 tutorial from Satija lab at NYU. https://satijalab.org/seurat/articles/pbmc3k_tutorial
 
 ### Identified Cell Types
 - Naive CD4+ T cells
@@ -35,7 +35,7 @@ The complete workflow includes:
 ## 📋 Requirements
 
 ### Software
-- R (≥ 4.0.0)
+- R (≥ 4.2.0)
 - RStudio (recommended)
 
 ### R Packages
@@ -202,15 +202,29 @@ For questions or feedback, please open an issue on GitHub.
 
 ## 🙏 Acknowledgments
 
-- **Seurat:** Stuart et al., Cell 2019
+- **Seurat:**
+  - Hao, et al., *Nature Biotechnology* 2023 [Seurat v5]
+  - Hao*, Hao*, et al., *Cell* 2021 [Seurat v4]
+  - Stuart*, Butler*, et al., *Cell* 2019 [Seurat v3]
+  - Butler, et al., *Nature Biotechnology* 2018 [Seurat v2]
+  - Satija*, Farrell*, et al., *Nature Biotechnology* 2015 [Seurat v1]
 - **PBMC Dataset:** 10X Genomics
 - **Tutorial inspiration:** Seurat vignettes and documentation
 
 ## 📖 References
 
-1. Stuart T, Butler A, et al. Comprehensive Integration of Single-Cell Data. *Cell* 177, 1888-1902 (2019).
-2. Hao Y, Hao S, et al. Integrated analysis of multimodal single-cell data. *Cell* 184, 3573-3587 (2021).
-3. 10X Genomics PBMC Dataset: https://support.10xgenomics.com/single-cell-gene-expression/datasets
+1. Hao Y, Stuart T, Kowalski MH, et al. Dictionary learning for integrative, multimodal and scalable single-cell analysis. *Nature Biotechnology* (2023). https://doi.org/10.1038/s41587-023-01767-y
+
+2. Hao Y, Hao S, Andersen-Nissen E, et al. Integrated analysis of multimodal single-cell data. *Cell* 184, 3573-3587.e29 (2021). https://doi.org/10.1016/j.cell.2021.04.048
+
+3. Stuart T, Butler A, Hoffman P, et al. Comprehensive Integration of Single-Cell Data. *Cell* 177, 1888-1902.e21 (2019). https://doi.org/10.1016/j.cell.2019.05.031
+
+4. Butler A, Hoffman P, Smibert P, Papalexi E, Satija R. Integrating single-cell transcriptomic data across different conditions, technologies, and species. *Nature Biotechnology* 36, 411-420 (2018). https://doi.org/10.1038/nbt.4096
+
+5. Satija R, Farrell JA, Gennert D, Schier AF, Regev A. Spatial reconstruction of single-cell gene expression data. *Nature Biotechnology* 33, 495-502 (2015). https://doi.org/10.1038/nbt.3192
+
+6. 10X Genomics PBMC Dataset: https://support.10xgenomics.com/single-cell-gene-expression/datasets
+
 
 ---
 

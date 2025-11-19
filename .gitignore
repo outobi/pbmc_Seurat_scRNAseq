@@ -1,0 +1,65 @@
+# R and RStudio files
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# R Markdown output files
+*.html
+*.pdf
+*_cache/
+*_files/
+
+# Seurat object files (large binary files)
+*.rds
+*.RDS
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*~
+*.swp
+*.swo
+*#
+
+# Data files (optional - uncomment if you don't want to track large data)
+# *.mtx
+# *.tsv
+# *.csv
+# *.h5
+# *.h5ad
+
+# Output directories
+results/
+figures/
+output/
+
+# Python virtual environments (if using Python tools)
+venv/
+env/
+.venv/
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# MacOS
+.AppleDouble
+.LSOverride
+
+# Windows
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
